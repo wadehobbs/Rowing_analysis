@@ -1,0 +1,488 @@
+---
+title: "World Rowing Championships: Exploring, modeling, visualising in R"
+output: html_document
+
+---
+
+## Preview 
+
+The gif shows the 2017 men’s single skulls final, coloured by finishing
+position. Code to make the gif is at the end of the post.
+
+<div style="text-align: center;">
+  <img src="race_sim_2017_60fps.gif" width="800px">
+</div>
+
+## Post Overview
+
+I have been looking for opportunities to develop and test skills with new data sets. I had a lot of trouble finding a good sports results data set until I stumbled across a rowing data set on twitter (https://github.com/danichusfu/rowing_pacing_profiles). This is a long post, so rather than copy/paste all the code boxes see here for code in a contained r file (https://github.com/wadehobbs/Performance-Predictions).
+This post will follow my work-flow from getting the data set, exploring, visualisation, modeling, mistakes etc. to demonstrate the data exploration process (or my attempt at it at least). The goal is to build a model that accurately predicts rowing performance. Its written in order of my own ideas and exploration, so may not follow a clear linear progression. I will cover the following:
+•	Data cleaning
+•	Data wrangling for visualisation
+•	Data exploration (with visualisations)
+•	Race models (Fails and improvements)
+•	Animated and interactive visualisations
+
+## Data Import and Summary
+
+First step is to load packages and import data (saved in working directory). All packages can be installed from RStudio apart from those with an *.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+library(tidyverse)
+library(DataExplorer)
+library(lubridate)
+library(reshape2)
+library(ggrepel)
+library(magrittr)
+library(gridExtra)
+library(broom)
+library(RColorBrewer)
+library(plotly)
+library(transformr) # install by running code below
+library(gganimate) # install by running code below
+
+# devtools::install_github('thomasp85/gganimate')
+# devtools::install_github("thomasp85/transformr")
+
+rowing_world_championships <- read_csv("rowing_world_championships.csv")
+
+```
+
+
+## Data Wrangling
+
+The dataset has ~9200 rows and 131 columns including multiple events over 6 years of competition. I decided early to work on just one event (the men’s single scull). Import the data and order by date of race – to do this I used the dmy function from the lubridate package to set the race date and ordered by date.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+#Chose the men's single scull as it has the most entries
+mss <- filter(rowing_world_championships, event_cateogry_abbreviation == "M1x")
+mss$race_date <- dmy(mss$race_date)
+mss <- arrange(mss, race_date) #Found date is pretty inconsequential outside of year so will only consider year
+mss$year <- year(mss$race_date) #year function from lubridate package
+mss$year <- as.factor(mss$year) #Make the year variable a factor for plotting
+
+```
+
+Next, I wanted a unique reference ID for each rower in each race. The data is already arranged in this way (ie each row represents a rower in a race). Then I removed unneeded variables. This is handy for plotting later.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+#Add unique row id for each rower within each race - comes in handy later.
+mss$row_id <- as.factor(c(1:nrow(mss)))
+
+#Remove useless variables - note spelling mistake in 'event_cateogry_abbreviation'
+mss <- select(mss, -c(Year, lane_sl, event_cateogry_abbreviation, event_num, race_number, coxswain_birthday:third_name))
+
+```
+
+The first thing I wanted to do was to plot race progress through the four split times provided. These are recorded at the 500m, 1000, 1500m and 2000m (end) of each race, with each split measure (and speed, stroke for that matter) sitting in it’s own column. This makes plotting tricky – ggplot needs the data to be in a ‘tidy’ format, meaning in this case, the race splits need to sit in the same column so they can be mapped to the y-axis of the plot. You can’t plot values on an axis across multiple columns. To get the data in the right format I used the melt function from the reshape2 package (though the same results can be achieved with gather/spread functions from tidyr package). To test, I isolated one race and plotted it. The %>% (called pipe) is a great way to link functions for more readable code. In this case, I filtered the data_melt dataset for all rows that matched the race_id and championship_name_description, then further filtered those rows for the four splits (eg. split_1_time) I wanted.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+data_melt <- melt(mss)
+#select one race
+race_1 <- data_melt %>% filter(race_id == 'ROM012901' & 
+                        championship_name_description == 'Slovenia 28 Aug - 4 Sept 2011""') %>%
+                                filter(variable == 'split_1_time' | variable == 'split_2_time' | 
+                                           variable == 'split_3_time' | variable == 'split_4_time')
+
+#The melt function collapses the 4 splits columns into one called variable (along with speed, rank, stroke and others)
+#With corresponding value of the given variable in the value column
+race_1 %>% 
+    select(race_id, championship_name_description, variable, value) %>%
+    head()
+
+```
+
+The plot below shows the time (x axis) by distance (y axis) for one race, coloured by athlete.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+ggplot(race_1, aes(x = variable, y = value, group = bow_name, colour = bow_name)) +
+    geom_line() +
+        labs(colour = "Bow Name", y = "Time (Seconds)", x = "")
+
+```
+
+Now that we can plot the data,its clear that there isn’t much change in pace through the race, pretty much a straight line. I’ll look at the data in another way.
+
+As the data set is across 7 years, its safe to say some athletes show up across numerous years of competition. The next plot shows an athlete’s races through 5 years of competition. Ive added code for two more plots (not shown) that are slight variations on the plot below.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+synek <- data_melt %>% filter(bow_name == 'SYNEK Ondrej') %>%
+        filter(variable == 'split_1_time' | variable == 'split_2_time' | 
+               variable == 'split_3_time' | variable == 'split_4_time')
+
+#plot of athlete's race progression across numerous years
+ggplot(synek, aes(x = variable, y = value, group = row_id, colour = year)) +
+       geom_line(alpha = 0.6) +
+       labs(colour = "Year", y = "Time (Seconds)", x = "")
+
+#plot of athletes race progression by round type (ie heat, semi, final)
+# ggplot(synek, aes(x = variable, y = value, group = row_id, colour = round_type)) +
+#        geom_line()
+
+#plot shows finishing time for each race of each year, coloured by year and shape shows round type
+# ggplot(filter(synek, variable == 'split_4_time'), 
+#     aes(x = variable, y = value, group = row_id, colour = year, shape = round_type)) +
+#         geom_jitter(width = 0.02, size = 5)
+
+#Result of last plot suggests finals are fastest and heats generally slowest, 
+#but with variability across years and round types.
+
+```
+
+One thing to note about rowing (though im no expert) is the impact of environmental factors – wind and current can significantly impact race times. Something to consider as we continue. But this is the first hint that time may not be a great predictor of performance.
+
+To explore this further ill refocus on the larger data set, this plot shows the finishing time for all races in the set. It shows the variation across years.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+#Subset rows from data_melt for the split times - excluding the other features in variable column (speed, stroke etc)
+melted_mss_splits <- filter(data_melt,variable == 'split_1_time' | variable == 'split_2_time' | 
+                            variable == 'split_3_time' | variable == 'split_4_time')
+
+#Split 4 plotted across years
+ggplot(filter(melted_mss_splits, variable == 'split_4_time'),
+       aes(x = variable, y = value, group = row_id, colour = year)) +
+       geom_jitter(width = 0.1, size = 5, alpha = 0.5) +
+       facet_wrap(~gender) +
+       labs(x = "", y = "Time (Seconds)", colour = "Year")
+
+```
+
+Looks like the vast majority of athletes finish the race between 400 and 450 seconds. 50 seconds is a wide band for a race lasting roughly 7 minutes.
+
+## Speed
+
+Is speed a better predictor of performance? Does it change through the course of a race? If so, by how much?
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+melted_mss_speed <- data_melt %>%
+        filter(str_detect(variable, 'speed')) %>%  #str_detect function finds rows containing the given string
+        mutate(variable = as.character(variable))
+#Set the variable column to the speed distance only. ie remove 'speed_' from string
+#parse_number extracts a number from a string ie 'speed_100' becomes 100
+melted_mss_speed$variable <- parse_number(melted_mss_speed$variable)   
+
+#order based on row_id and speed
+melted_mss_speed <- arrange(melted_mss_speed, row_id, variable)
+
+#plot all races looking at speed across the race - each year has a different colour
+ggplot(melted_mss_speed, aes(x = variable, y = value, group = row_id, colour = year)) +
+       geom_line(alpha = 0.6) +
+       labs(x = "Distance", y = "Speed (m/s)", colour = "Year")
+
+```
+
+Plot shows speed on the y and distance on the x. Clearly quite a few rowers had issues with the speed recording on their boats. Will want to filter out some of these data issues to better see the real results. Its fair to assume that speed after 250m should be over 3m/s. So will plot again and filter out rows with distance >= 250 and speed < 3.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+ggplot(filter(melted_mss_speed, variable >= 250 & value > 3), 
+       aes(x = variable, y = value, group = row_id, colour = year)) +
+       geom_line() +
+       labs(x = "Distance", y = "Speed (m/s)", colour = "Year")
+
+```
+
+Clearly there are still some issues but this gives a decent idea of the speed throughout the race. There is a clear shallow U shape. Another interesting feature is the drop in speed at the end of the race, showing the high number of rowers who have significantly slowed before the end of the race – presumably when they are out of contention.
+A final plot on this data is my best attempt to show speed profiles through the race for each country (may be different athletes through the years). Its not perfect, with country labels overlapping but that’s hard to avoid with so many countries included. A solution would be to filter specific teams of interest or by fastest teams. 
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+#Plot shows mean speed profiles per country with labels- labels overlap but cant get geom_text_repel to work
+ggplot(filter(melted_mss_speed, variable >= 250 & value > 3), 
+       aes(x = variable, y = value, group = team, colour = team, label = team)) +
+        geom_smooth(method = loess, size = 2, se = FALSE, alpha = 0.1) +           #This creates the model lines
+        geom_label(data = group_by(melted_mss_speed, team) %>%  #This section creates the labels (straight from stackoverflow)
+                   do(augment(loess(value~variable, .))) %>%
+                           filter(variable == max(variable)),
+                           aes(variable, .fitted), nudge_x = 100, inherit.aes = T,) +
+        theme(legend.position="none")
+
+```
+
+## Modelling 
+
+### Data Set-up
+
+The plan here was to model the data in a way that would allow me to fiddle with inputs and see how it affected the finishing time. ie if a rower is 0.1m/s faster through the first 500m how does it change their final time? I tried modeling split time by distance, speed and stroke rate. Obviously distance doesn’t change so it would show how speed influenced the outcome variable (split time at each check-point). First step is prepare the data. This is a bit messy but essentially, I take the melted_mss_speed data set, add the stroke variable and call it row_pred_data, then rename columns. The hardest part was mapping the corresponding split times for each rower. To do this I wrote a for loop that takes the ith row_id (individual rower), gets the split times for that run, and matched the distance value across the split data and the target data. Images below code shows before and after, notice the last column.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+melted_mss_stroke <- data_melt %>%
+        filter(str_detect(variable, 'strokes')) %>%
+         mutate(variable = as.character(variable))
+
+#Create one data set with both speed and stroke rate 
+melted_mss_stroke$variable <- parse_number(melted_mss_stroke$variable) 
+melted_mss_stroke <- arrange(melted_mss_stroke, row_id, variable)
+row_pred_data <- melted_mss_speed
+colnames(row_pred_data)[23] = 'distance'
+colnames(row_pred_data)[24] = 'speed'
+row_pred_data$stroke <- melted_mss_stroke$value
+
+#Create splits data
+melted_mss_splits <- data_melt %>%
+        filter(str_detect(variable, 'split'))
+melted_mss_splits <- arrange(melted_mss_splits, row_id)
+#Add distance value for each split so it can be mapped to distance in the row_pred_data set. 
+melted_mss_splits$distance <- rep(c(500,1000,1500,2000), length(unique(melted_mss_splits$row_id)))
+
+#Takes a subset of the row_pred_data, maps the ith rowers splits to distance and adds to a dataset (tmp)
+data <- row_pred_data[,20:25]
+tmp <- data.frame()
+df <- data.frame()
+row_id <- unique(row_pred_data$row_id)
+for(i in row_id){
+        df <- data[ data$row_id==i, ]
+        split <- melted_mss_splits[ melted_mss_splits$row_id == i, ]
+        df$split <- split$value[match(df$distance, split$distance)]
+        tmp <- rbind(df, tmp)
+}
+#Bit slow (a few seconds) using for loop but does the job
+#tmp now has all the splits mapped and the split column is added to the target data - row_pred_data
+tmp <- arrange(tmp, row_id)
+row_pred_data$split <- tmp$split
+
+```
+
+#### Attempt 1 (fail)
+
+Now the data is set up we can start building a model. Because the relationship between distance and splits is linear, a linear regression is the obvious choice – add speed and stroke variables, then multiple linear regression is the way to go. This is very easily specified in R with the lm function:
+
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+all_data_mod <- lm(split ~ distance + speed + stroke, row_pred_data) 
+summary(all_data_mod) 
+``` 
+
+The model fits almost perfectly (R-squared = .99), not a big surprise – obviously as distance increase split time does too, and add speed and stroke and the model is highly predictive. The point of this model is to test what impact changes in speed or stroke through the race can have on final split time, not to say anything about the relationship between speed and split times, thats already pretty clear.
+
+Through some experimentation it became clear, this model doesn’t work. It takes individual values of distance, speed and stroke and outputs a split time value. If, for example, I increase speed over the first 500m of the race, it does not change the final split, as the final split is predicted based solely on the speed, stroke and distance when distance = 2000. This was an experiment that didn’t work – the reasons for which are quite obvious now. Lesson in thinking clearly about what the model is doing before making it. Moving on…
+
+#### Attempt 2
+
+You can predict split time at 1000m from the split time at 500m, and the 1500m split from the 1000m split. It is possible the final split to be less predictable as some athletes stop rowing before the end of the race (as we saw earlier). In this way, we could show, if the athlete gets through the first 500m x seconds faster, it would impact their time at 1500m by y amount. The overall concept is shown below. Previous split time is predictive of the next split time. Plot is coloured by year.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+#Remove any serious outliers
+rowing_world_championships <- filter(rowing_world_championships, split_1_time < 250)
+rowing_world_championships <- filter(rowing_world_championships, split_2_time < 550)
+
+#Create plots
+split1_2 <- ggplot(mss, aes(x = split_1_time, y = split_2_time, group = year, colour = year)) +
+        geom_point() +
+        geom_smooth(method = lm) +
+        theme(legend.position="none")
+split2_3 <- ggplot(mss, aes(x = split_2_time, y = split_3_time, group = year, colour = year)) +
+        geom_point() +
+        geom_smooth(method = lm) +
+        theme(legend.position="none")
+split3_4 <- ggplot(mss, aes(x = split_3_time, y = split_4_time, group = year, colour = year)) +
+        geom_point() +
+        geom_smooth(method = lm)+
+        theme(legend.position="none")
+
+#This arranges multiple plots in the same image
+grid.arrange(split1_2, split2_3, split3_4, ncol = 1)
+
+```
+
+After plotting, it appears this relationship is true in the data set. So need to set up the model. It will take the time at 500m and predict time at 1000m. It can be extended to predict time at 1500m as well. Sticking to the head-to-head athlete comparison, I will reuse the ‘synek’ data set from earlier and compare to another prominent athlete in the data set.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+#Data set-up: need a row for each split time so spread the original dataset
+synek_spt_pred <- spread(synek, key = variable, value = value)
+#make lm model
+synek_1.2_lm <- lm(split_2_time ~ split_1_time, synek_spt_pred)
+synek_2.3_lm <- lm(split_3_time ~ split_2_time, synek_spt_pred)
+synek_3.4_lm <- lm(split_4_time ~ split_3_time, synek_spt_pred)
+
+#Predict time at split 2 from given split 1 
+#predict needs a dataframe specifying the predictor variable name for new data argument
+predict(synek_1.2_lm, newdata = data.frame(split_1_time = 100))
+
+
+#viz of mod 1
+ggplot(synek_spt_pred, aes(split_1_time, split_2_time, colour = round_type)) +
+        geom_point(size = 4) +
+        geom_smooth(aes(split_1_time, split_2_time), method = lm, inherit.aes = FALSE)
+
+```
+
+So it looks like predicting split time at 1000m (split_2_time) from split at 500m works reasonably well. No clear pattern by splitting data by round type either. The lm code earlier set up two models, the first predicts split 2 from split 1 and the second predicts split 3 from split 2. While it may not be that accurate, we can predict split time at 1500m from split time at 500m by combining the two models with the predict function.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+predict(synek_2.3_lm, newdata = data.frame(split_2_time = 
+                                           predict(synek_1.2_lm, newdata = data.frame(split_1_time = 100))))
+```
+
+Working backwards, the synek_1.2_lm model predicts split time at 1000m from a 500m split time of 100 seconds. That predicted value (203.29) is then fed into the synek_2.3_lm model to predict split time at 1500m (307.26). It should be noted, there is error around the predictions, so using a predicted value to predict a new one will add further error.
+
+To explore this a little further I made the same models for another prominent athlete – Angel Rodriguez Fournier. Predictions showed Fournier was predicted to be slightly slower on average, up to 100 seconds, at which point, if split at 500m was over 100 seconds Fournier was predicted to be faster than Synek at split 1000m. This is shown in the plot below.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+fournier <- data_melt %>% filter(bow_name == 'FOURNIER RODRIGUEZ Angel') %>%
+        filter(variable == 'split_1_time' | variable == 'split_2_time' | variable == 'split_3_time' | variable == 'split_4_time')
+fournier_spt_pred <- spread(fournier, key = variable, value = value)
+
+#models
+fournier_1.2_lm <- lm(split_2_time ~ split_1_time, fournier_spt_pred)
+fournier_2.3_lm <- lm(split_3_time ~ split_2_time, fournier_spt_pred)
+fournier_3.4_lm <- lm(split_4_time ~ split_3_time, fournier_spt_pred)
+
+#Save the intercept and slope from each model for the plot
+synek1.2_line <- coef(synek_1.2_lm)
+synek2.3_line <- coef(synek_2.3_lm)
+fournier1.2_line <- coef(fournier_1.2_lm)
+fournier2.3_line <- coef(fournier_2.3_lm)
+
+#set colours
+cols = c('Fournier' = '#F78181', 'Synek' = '#04B4AE')
+
+#make plot
+mod_plot <- ggplot(data = mss, aes(split_1_time, split_2_time)) +
+        geom_point(aes(split_1_time, split_2_time), alpha = 0.2, inherit.aes = FALSE) +
+        geom_point(aes(split_1_time, split_2_time), alpha = 0.2, inherit.aes = FALSE) + 
+        geom_point(data = synek_spt_pred, aes(colour = 'Synek'), size = 2) +
+        geom_point(data = fournier_spt_pred, aes(colour = 'Fournier'), size = 2) +
+        geom_abline(slope = synek1.2_line[[2]], intercept = synek1.2_line[[1]], colour = '#04B4AE') +
+        geom_abline(slope = fournier1.2_line[[2]], intercept = fournier1.2_line[[1]], colour = '#F78181')
+ggplotly(mod_plot)
+
+```
+
+*Plot is interactive, you can hover on points to see values or zoom in on an area using the box select tool*
+
+This is a slightly difficult plot to interpret. It shows the relationship between split time 1 and split time 2 for all athletes in the dataset (black dots represent 1 race in the data). The closer to the bottom left of the plot a point is, the faster the time was. Points that are high (above the bulk of points) suggests a slower than average split time 2 for a given split time 1. Similarly, below the bulk of the points suggests a faster split 2 for a given split 1. With this in mind, the plot shows Synek (pale blue line) tends to follow the average athlete’s trend closer than Fournier. If Synek sets a split 1 time < 99 senconds, he will tend to have a marginally faster split 2, this equals out around 99-100 seconds where their lines cross over. For split 1 times > 101 Fournier is faster at split 2. This probably means Fournier is a slow starter. Though Synek is faster in general, with more points closer to the bottom left of the plot. In saying that, there is a lot of variance, with points falling either side of the model line. More data for each athlete is needed.
+
+## Data Explotation - Extended
+
+### Variation in finishing times across years
+
+Mitch reiterated the pitfalls of trying to compare split times across races or years (similarly speed or stroke) because of the impact of outside factors (wind, current etc). I was interested to see the extent of this.
+
+Lets look at the spread of finishing times (split_4_time) based on round type, after removing slow finishers.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+#remove rowers who slowed before end of the race
+mss <- filter(mss, split_4_time < 500)
+
+#Change to factor and order so the rounds appear in order from heat to final. 
+mss$round_type <- as.factor(mss$round_type)
+mss$round_type <- ordered(mss$round_type, levels = c('heat', 'repecharge', 'quarterfinal', 'semifinal', 'final'))
+
+#Plot finishing time by round type
+ggplot(mss, aes(x = round_type, y = split_4_time)) + 
+        geom_boxplot()
+
+```
+
+Pretty big spread. Does this change through the years?
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+ggplot(mss, aes(x = year, y = split_4_time, colour = round_type)) + 
+        geom_boxplot() + scale_color_brewer(palette ="Set1") 
+#my colours were screwing up and were hard to see so added a RcolorBrewer palette. 
+
+```
+
+Yes. There is a wide range of times across all years and all round types. No clear pattern there, further confirming that time is not a great indication of performance on its own, though if used correctly can be predictive within a single race.
+
+With this in mind, what would be a better way of visualising performance, given time is not useful? I thought an interesting question would be, how do finalists get to the final? Ie what does their progression through the competition look like? Is it likely a rower will make the medal finals if relegated to the repecharge round? Do finalists usually win their heat? What indicators can predict a finals appearance?
+
+### Visualising the finalist's path to the final
+
+Cue visualisation of how an athlete progresses through a competition. Goal is to show the finishing position in each round for the 6 medal finalists.
+Note progression rules (as I understand them):
+•	The athletes that finish top 3 in their heat avoid repecharge. The top 3 athletes from each quarter enter the A/B semi and the others go to C/D or E/F semi.
+•	Similarly, the A final is made up of the top 3 athletes from the A/B semi 1 and A/B semi 2 races. Therefore, if you dont make the A/B semi, there is no path to the A final (medal final).
+
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+#First step is to get the data - this is simply sub-setting columns from the mss_rank data set and arranging 
+#by year and team for ease of use - not strictly necessary.
+mss_rank <- select(mss, .data$team, .data$rank_final, .data$progression, .data$round, .data$round_type, .data$year, .data$row_id)
+
+mx1_prog <- mss_rank %>%
+        select(team, round, rank_final, year) %>%
+        arrange(year, team)
+mx1_prog$team <- as.factor(mx1_prog$team)
+
+#Next step is to set up the 'round' column so its clear when an athlete progresses from heat to semi to final for example. 
+#For this, I made all heats "H" instead of "H1", "H2" etc. Same for repecharge rounds. 
+#The heat number is essentially meaningless - the quarter, semi and final numbers do have meaning. 
+#The following code subsets rows of the data frame that I want to change, then assigns those rows in the 2nd column the string 'H' or 'R'. 
+#grep function pattern matches 'H' in the given rows.  
+mx1_prog[grep('H', mx1_prog$round), 2] <- 'H'
+mx1_prog[grep('R', mx1_prog$round), 2] <- 'R'
+
+#Next step is to reorder the levels of the factor so they appear on a plot in order from heat to final
+mx1_prog$round <- ordered(mx1_prog$round, levels = c('H', 'R', 'Q4', 'Q3', 'Q2', 'Q1', 'SE/F/G 3', 'SE/F/G 2', 
+                                                       'SE/F/G 1','SE/F 1','SE/F 2', 'SC/D 2', 'SC/D 1', 'SA/B 2', 'SA/B 1', 'FG', 
+                                                       'FF', 'FE', 'FD', 'FC', 'FB', 'FA'))
+
+#I then create a data frame that contains the team names of the teams that reached the A final in a given year. 
+#This data frame will be used to subset the mx1_prog data set in a plot. 
+teams2010 <- mx1_prog[mx1_prog$round == "FA" & mx1_prog$year == '2010',1]
+teams2011 <- mx1_prog[mx1_prog$round == "FA" & mx1_prog$year == '2011',1]
+teams2013 <- mx1_prog[mx1_prog$round == "FA" & mx1_prog$year == '2013',1]
+teams2014 <- mx1_prog[mx1_prog$round == "FA" & mx1_prog$year == '2014',1]
+teams2015 <- mx1_prog[mx1_prog$round == "FA" & mx1_prog$year == '2015',1]
+teams2017 <- mx1_prog[mx1_prog$round == "FA" & mx1_prog$year == '2017',1]
+
+#The teams20xx vector is then used in to specify which countries to follow through the rounds and the corresponding year is called in the filter function. Note: need to use teams20xx$team to get the vector 
+#This gives us the A finalists data, which is then plotted by round and rank to show finishing position of each finalist through each round of the given competition
+ggplot(filter(mx1_prog, team %in% teams2017$team & year == '2017'), 
+       aes(x = round, y = rank_final, group = team, colour = team)) +
+        geom_line(size = 1.5, alpha = 0.6) +
+        geom_point()
+
+```
+
+
+In the 6 years of world championship data for the Mens single scull event, no athletes made it to the medal final after being sent to the repecharge round. In other words, if you dont finish top three in your heat its extremely unlikely you will make the medal final in a world championships.
+
+
+Finally, the code for the gif. Not the most concise code but works for the example plot.To run just uncomment the plot and annimate lines.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, echo = T}
+fa_2017 <- filter(row_pred_data, year == '2017' & round == 'FA')
+
+#Add a start distance to the data or the race would start at 500m in the plot
+fa_2017[fa_2017$distance == '50',26] <- 0
+
+#Reduce data to only the rows with split times
+fa_2017 <- select(fa_2017, c(bow_name, distance, split)) %>%
+        na.omit()
+
+#Manually add rank - this could be automated but can't be bothered right now
+fa_2017$rank <- as.factor(c(6,6,6,6,6,4,4,4,4,4,1,1,1,1,1,3,3,3,3,3,2,2,2,2,2,5,5,5,5,5))
+
+#The plot. 
+#The first 7 lines are just a normal static plot. The animation comes from the transition_reveal function from gganimate package
+#This makes the data gradually appear based on a time dimension. The first argument is the 'id' argument which is the row 
+#note the help file suggests the id is usually the same as the group asthetic for lines/points, this is the case for me. 
+#The second argument is 'along', meaning my plot gradually reveals data according to the split times, giving it the appearance of the dots going faster or slower. 
+fa_2017 %<>% rename(race_splits = split)
+
+# race_sim_2017 <- fa_2017 %>%
+#         ggplot( aes(x = distance, y = bow_name, group = bow_name, colour = rank)) +
+#         geom_point(size = 4) +
+#         geom_line(size = 4) +
+#         theme(legend.position="none") +
+#         scale_color_brewer(palette ="Greens", direction = -1) +
+#         labs(x = 'Distance' , y = '') +
+#         geom_vline(xintercept = 2000, linetype="dotted", size = 1) +
+#         theme_minimal() +
+#         transition_reveal(race_splits)
+
+#The animate function lets you adjust width, height, duration etc. The gif made from this call is very jumpy (ie not smooth), in which case we can adjust the fps (frames per second). 
+#This has a weird affect on the duration, so it was trial and error to make it work. 
+#animate(race_sim_2017, width = 1000, height = 500, duration = 15)
+
+#gif animation that's a bit smoother
+# animate(race_sim_2017, width = 1000, height = 500, duration = 3, fps = 50)
+
+#Saves the last created animation to working directory
+#anim_save('race_sim_2017_60fps.gif')
+
+
+```
+
+
